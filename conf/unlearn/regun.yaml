@@ -1,0 +1,21 @@
+name: regun
+evaluate_each_epoch: true
+trainer:
+  max_epochs: 10
+optim:
+  name: sgd
+  lr: 0.01                       # CIFAR-10 medium; thử 5e-3 nếu forget quá mạnh
+  momentum: 0.9
+  weight_decay: 0.0
+  nesterov: false
+  betas: [0.9, 0.999]
+  exclude_wd_norm_bias: true
+scheduler:
+  name: none
+regun:
+  selector: class_informed       # 🔥 paper Algorithm 1 (match class histogram)
+  aggregation: mean_probs        # 🔥 paper (mean of probabilities)
+  fixed_reference: true          # 🔥 fϕ = fθ0 frozen
+  temperature: 1.0               # 🔥 paper không có temperature
+  retain_weight: 0.7             # paper w ∈ [0.1,0.9]; acc_retain cao ⇒ w≈0.7
+  forget_weight: ${eval:1 - ${.retain_weight}}

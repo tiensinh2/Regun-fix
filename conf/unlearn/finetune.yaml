@@ -1,0 +1,14 @@
+name: finetune
+evaluate_each_epoch: true
+trainer:
+  max_epochs: 10                 # 🔥 paper budget
+optim:
+  name: sgd
+  lr: 0.01                       # medium; có thể 5e-2 cho forget mạnh hơn
+  momentum: 0.9
+  weight_decay: 0.0
+  nesterov: false
+  betas: [0.9, 0.999]
+  exclude_wd_norm_bias: true
+scheduler:
+  name: none

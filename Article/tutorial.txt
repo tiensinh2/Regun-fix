@@ -1,0 +1,53 @@
+Dạ em thưa thầy tối qua nhóm họp thì em và anh Phương đang nhận thấy có một vấn đề ở bài báo ạ. Việc phương pháp của bài báo thì đang sử dụng thêm 1 bộ dữ liệu khác train, forget và test. Do đó như anh Phương có nói thì đây là một lợi thế rất lớn khi các phương pháp khác không sử dụng hay thí nghiệm của bài báo đang không công bằng. Em xin ý kiến của thầy về việc này ạ.
+1. Mô tả vấn đề
+Trong thiết lập thực nghiệm hiện tại (paper + codebase), tất cả các phương pháp unlearning được so sánh trên cùng một model gốc fθ0 và cùng một cặp (Dr, Df), ngoại trừ REGUN — phương pháp duy nhất được cấp thêm quyền truy cập vào Dh, một tập dữ liệu đã gán nhãn, disjoint với Dtrain, có kích thước cố định bằng 10% |Dorig|.
+
+Về mặt thiết kế thí nghiệm, đây là vi phạm nguyên tắc ceteris paribus (giữ nguyên mọi biến trừ biến đang muốn so sánh): khi so REGUN với NegGrad+/SalUn/LUR/SCRUB/ℓ1-Sparse, biến độc lập không chỉ là "công thức thuật toán" mà còn lẫn cả "lượng dữ liệu được phép dùng". Hai biến này bị confound (trộn lẫn) với nhau trong mọi con số so sánh hiện có.
+
+Cần phân biệt rõ với khái niệm data leakage (rò rỉ dữ liệu): leakage là khi một phương pháp nhìn thấy thông tin từ chính tập dùng để đánh giá nó (Dval, Dtest) — điều này không xảy ra ở đây, vì Dh được tách khỏi Dorig từ trước khi hình thành Dtrain, và cả θ0 lẫn θr (retrain-from-scratch, tức gold standard) đều không được train trên Dh. Vấn đề ở đây là bất đối xứng ngân sách input giữa các thuật toán được so sánh, không phải nhiễm bẩn tập đánh giá.
+
+2. Bằng chứng từ paper
+Mục 2.1 định nghĩa rõ ràng: bên cạnh Dtrain = Dr ∪ Df, phương pháp giả định có thêm quyền truy cập một "disjoint labeled held-out dataset" Dh, hoàn toàn tách biệt với Dtrain. Đây là tiền đề (assumption) chỉ được phát biểu cho REGUN, không phải cho các baseline khác.
+
+Chính paper cũng thừa nhận điều này khi so sánh với công trình trước: các phương pháp reference-based trước đây thay thế output trên forget set bằng pseudo-probability (uniform hoặc global), còn REGUN dùng một tập held-out riêng biệt làm nguồn giám sát tường minh — nghĩa là paper tự xác nhận REGUN dựa vào một nguồn thông tin (Dh) mà các baseline gradient-ascent/fine-tuning cổ điển không có.
+
+Tuy nhiên, trong toàn bộ phần thực nghiệm (Section 3 và Appendix A mô tả hyperparameter cho từng baseline: NEGGRAD, NEGGRAD+, FINETUNE, ℓ1-SPARSE, SSD, SALUN, AMUN), không có bất kỳ biến thể baseline nào được cấp quyền dùng Dh để kiểm soát biến này. Không có ablation dạng "Finetune + Dh" hay "NegGrad+ + Dh" để tách phần đóng góp của thuật toán REFDIST khỏi phần đóng góp thuần túy của việc có thêm dữ liệu.
+
+3. Bằng chứng từ code
+Kiểm tra trực tiếp lệnh gọi heldout_eval_dataloader() trong toàn bộ codebase các strategy:
+
+File	Có gọi heldout_eval_dataloader()?
+regun.py	Có — run(): heldout_loader=self.dm.heldout_eval_dataloader(), truyền vào _ReGUnModule
+neggrad.py	Không
+neggradp.py	Không
+l1sparse.py	Không
+salun.py	Không
+lur.py	Không
+scrub.py	Không
+ssd.py	Không
+ReGUn là method duy nhất trong toàn bộ 8 file strategy có tham chiếu đến Dh. Cụ thể, trong regun.py, Dh được dùng ở 3 điểm:
+
+_ReGUnModule.__init__: nhận heldout_loader, lưu thành self.heldout_loader, và với selector="uniform" thì bọc thành self.heldout_iter = cycle(heldout_loader).
+_supervision_distribution(): đây là nơi Dh trực tiếp quyết định target phân phối q(Bf) dùng trong loss KL — tức Dh không phải phụ trợ mà là nguồn tín hiệu chính của forget loss.
+_cache_heldout_logits() / _cache_heldout_features(): precompute logits/feature toàn bộ Dh từ reference model fθ0 một lần, dùng lại cho mọi step.
+Không có cơ chế tương tự ở bất kỳ file baseline nào — các baseline chỉ có 2 nguồn input: retain_dataloader()/retain_dataloader_subset() và forget_dataloader() (hoặc train_eval_dataloader() với riêng SSD).
+
+4. Định lượng mức độ chênh lệch
+Với heldout_frac=0.1 cố định (theo config), trong khi |Df| co giãn theo forget_frac ∈ {0.01, 0.1, 0.5}, tỉ lệ |Dh|/|Df| dao động rất mạnh:
+
+forget_frac	|Df|	|Dr|	|Dh|	|Dh|/|Df|
+0.01	0.009	0.801	0.1	≈ 11.1×
+0.1	0.09	0.72	0.1	≈ 1.11×
+0.5	0.45	0.36	0.1	≈ 0.22×
+(tính trên |Dorig| = 1, theo công thức chia split ở Section 3 của paper: Dh lấy trước 10% Dorig, sau đó Dval = 10% Dtrain còn lại, Df = forget_frac × Dtrain, phần còn lại là Dr)
+
+Ở forget_frac = 0.01 — đúng setting đang có discrepancy CIFAR-100 (acc_forget 46% vs 77%/75%) — Dh lớn gấp ~11 lần Df. Đây là điểm cần nhấn mạnh: mức độ bất đối xứng dữ liệu không cố định mà đặc biệt nghiêm trọng nhất chính tại setting đang gặp vấn đề.
+Dạ em thưa thầy em xin báo cáo với thầy tiến triển gần đây trong quá trình audit paper REGUN.
+
+Về vấn đề bất đối xứng ngân sách dữ liệu mà em đã trình bày với thầy trong buổi trước (REGUN được dùng thêm tập dữ liệu held-out mà các phương pháp unlearning khác không được truy cập), em đã soạn thư hỏi trực tiếp tác giả chính là anh Jonas Mirlach tại ETH Zurich, và đã nhận được phản hồi rất chi tiết.
+
+Tác giả xác nhận quan sát của em là hợp lệ và không phủ nhận có sự bất đối xứng. Tuy nhiên, anh ấy đưa ra hai bằng chứng thực nghiệm mới (trong một phiên bản mở rộng của paper mà anh ấy chia sẻ riêng với em, hiện đang trong quá trình review) để lập luận rằng bất đối xứng này không phải là nguyên nhân chính dẫn đến hiệu suất vượt trội của REGUN: (1) khi họ giảm kích thước tập held-out xuống rất nhỏ — chỉ còn khoảng vài chục tấm ảnh — REGUN vẫn đạt hiệu suất gần như khi dùng đầy đủ tập này, nghĩa là REGUN không thực sự cần nhiều dữ liệu thêm; (2) khi họ dùng tập held-out mà không dung nhãn của nó, hiệu suất cũng gần tương đương — nghĩa là dữ liệu thêm của REGUN có thể là dữ liệu không nhãn, khác về bản chất với loại dữ liệu mà các baseline supervised cần. Kết luận của tác giả: cải thiện của REGUN phần lớn đến từ cơ chế thuật toán chứ không phải từ lượng dữ liệu thêm. Em thấy lập luận này có cơ sở thực nghiệm, làm suy yếu đáng kể lo ngại ban đầu của em.
+
+Tuy nhiên khi đọc kỹ kết quả trên CIFAR-100, em phát hiện một điểm methodological khác đáng bàn. Paper dùng một chỉ số tổng hợp gọi là GapAvg để xếp hạng các phương pháp unlearning, được tính bằng trung bình cộng của bốn thành phần: ba độ chính xác phân loại trên ba tập dữ liệu khác nhau, và một chỉ số đo khả năng bảo vệ privacy của model (RMIA AUC). Ba độ chính xác và RMIA AUC đều được biểu diễn theo đơn vị %, nhưng bản chất toán học của hai loại đại lượng này khác nhau — accuracy đo tỉ lệ mẫu được phân loại đúng, còn AUC đo xác suất attacker phân biệt được giữa mẫu training và mẫu ngoài training. Một điểm chênh lệch trên thang accuracy không tương đương về ý nghĩa với một điểm chênh lệch trên thang AUC, nên việc trung bình cộng chúng với nhau khiến con số tổng hợp khó diễn giải.
+
+Em đã thử tính lại chỉ với 3 accuracy cùng loại (bỏ RMIA AUC ra), thì xếp hạng của REGUN thay đổi rõ rệt ở các setting có tỉ lệ forget cao: từ hạng nhì rơi xuống hạng năm khi forget 10% dữ liệu, và từ hạng nhất xuống hạng nhì khi forget 50%. Điều này gợi ý lợi thế của REGUN trong chỉ số tổng hợp paper báo cáo đến phần lớn từ thành phần RMIA AUC (privacy), chứ không phải từ utility. Em đang chuẩn bị một thư follow-up để hỏi tác giả về điểm này.
