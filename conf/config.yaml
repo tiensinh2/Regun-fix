@@ -23,9 +23,9 @@ mul_eval:
 # Base training setup
 trainer:
   max_epochs: 100
-  accelerator: auto
+  accelerator: gpu
   devices: 1
-  precision: bf16-mixed
+  precision: 16-mixed
   log_every_n_steps: 0
   enable_checkpointing: false
   enable_progress_bar: true
